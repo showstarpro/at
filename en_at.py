@@ -34,23 +34,33 @@ import timm
 
 
 class MLP(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
+    def __init__(self, out_channels):
         super(MLP, self).__init__()
 
-        self.ln1 = torch.nn.Linear(in_channels, hidden_channels[0])
+        self.cn1 = torch.nn.Conv2d(3,64,3)
+        self.pl1 = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.relu1 = torch.nn.ReLU()
-        self.ln2 = torch.nn.Linear(hidden_channels[0], hidden_channels[1])
+        self.cn2 = torch.nn.Conv2d(64,128,3)
         self.relu2 = torch.nn.ReLU()
-        self.ln3 = torch.nn.Linear(hidden_channels[1], out_channels)
-    
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.ln = nn.Linear(128,out_channels)
+        self.softmax = torch.nn.Softmax()
+
+
     def forward(self, x):
-        x = self.ln1(x)
+        x = self.cn1(x)
         x = self.relu1(x)
-        x = self.ln2(x)
+        x = self.pl1(x)
+        x = self.cn2(x)
         x = self.relu2(x)
-        x = self.ln3(x)
+        x = self.avgpool(x)
+        x = x.reshape(-1,128)
+        x = self.ln(x)
+        x = self.softmax(x)
+
 
         return x
+
 
     
     
@@ -60,7 +70,7 @@ def get_args_parser():
     parser.add_argument('--name', default='fgsm', type=str,
                         help='attack method',
                         choices=['fgsm', 'mi_fgsm', 'ni_fgsm', 'vmi_fgsm'])
-    parser.add_argument('--batch_size', default=2, type=int,
+    parser.add_argument('--batch_size', default=8, type=int,
                         help='Batch size per GPU')
     parser.add_argument('--eps', default=16/255.0, type=float,
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
@@ -84,6 +94,8 @@ def get_args_parser():
                         help='the white model')
     parser.add_argument('--model_3', default='inc_v4', type=str,
                         help='the white model')
+    parser.add_argument('--model_4', default='inc_res_v2_ens', type=str,
+                    help='the white model')
     parser.add_argument('--model_path', default=None, type=str,
                         help='the path of white model')
     parser.add_argument('--target_model', default='resnet101', type=str,
@@ -133,15 +145,17 @@ def main(args):
     data_loader_val = data.DataLoader(dataset=dataset,sampler=sampler_val, batch_size=batch_size, shuffle=False, num_workers=8)
     print(data_loader_val)
 
+    mseloss = torch.nn.MSELoss()
     if args.loss == 'ce':
         loss = nn.CrossEntropyLoss()
+    
     
     # load model
     print("load model!!!")
     model_1 = load_surrogate_model(args.model_1)
     model_2 = load_surrogate_model(args.model_2)
     model_3 = load_surrogate_model(args.model_3)
-    
+
 
     # load target_model
     print("load target_model!!!")
@@ -150,67 +164,145 @@ def main(args):
     model_1 = model_1.cuda()
     model_2 = model_2.cuda()
     model_3 = model_3.cuda()
+
     target_model = target_model.cuda()
     model_1.eval()
     model_2.eval()
     model_3.eval()
+
     target_model.eval()
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss= loss, q=20, sigma=1e-4)
-    mlp_g = MLP(3*3*299*299,[1024, 128], 3).cuda()
+    mlp_g = MLP(3).cuda()
     mlp_g.train()
-    opt = optim.SGD(mlp_g.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-5)
+    opt = optim.SGD(mlp_g.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
 
     total = 0
     correct =0
     train_bar = tqdm(data_loader_val)
     num = 0
     since = time.time()
+    # for i, (input, true_target) in enumerate(train_bar):
+    #     input = input.cuda().float()
+    #     true_target = true_target.cuda().long()
+    #     input.requires_grad = True
+        
+    #     g = torch.rand_like(input).cuda().float()
+    #     for i in range(input.size(0)):
+    #         g[i] = rgf.query(input[i].unsqueeze(0), true_target[i].unsqueeze(0))
+        
+    #     output_1 = model_1(input)
+    #     cost = loss(output_1, true_target).cuda()
+    #     cost.backward()
+        
+    #     grad_1 = input.grad
+    #     model_1.zero_grad()
+
+
+    #     output_2 = model_1(input)
+    #     cost = loss(output_2, true_target)
+    #     cost.backward()
+
+    #     grad_2 = input.grad
+    #     model_2.zero_grad()
+
+
+    #     output_3 = model_3(input)
+    #     cost = loss(output_3, true_target)
+    #     cost.backward()
+
+    #     grad_3 = input.grad
+    #     model_3.zero_grad()
+
+    #     # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
+    #     # grad_s = grad_s.reshape(-1, 3*3*299*299)
+
+    
+    #     weight = mlp_g(input)
+    #     g_hat = grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
+    #     g_hat = g_hat.reshape(-1, 3*299*299)
+    #     ct = mseloss(g_hat, g.reshape(-1, 3*299*299))
+
+
+    #     opt.zero_grad()
+    #     ct.backward()
+    #     opt.step()
+        
+
+
+    #     train_bar.set_description(" epoch: [{}], asr: {:.4f}".format( i, ct.item()))
+    #     # adv_images = input + 8/255 * images.grad.sign()
+    #     # adv_images = torch.clamp(adv_images, 0, 1)
+    
+    # print('Saving..')
+    # torch.save(mlp_g.state_dict(), os.path.join("./models/mlp_g.t7"))
+
+    
+    mlp_g.load_state_dict(torch.load("./models/mlp_g.t7"))
     for i, (input, true_target) in enumerate(train_bar):
         input = input.cuda()
         true_target = true_target.cuda()
-        input.requires_grad = True
+
+        momentum = torch.zeros_like(input).detach().cuda()
+        adv_images = input.clone().detach()
         
-        g = torch.rand_like(input).cuda()
-        for i in range(input.size(0)):
-            g[i] = rgf.query(input[i].unsqueeze(0), true_target[i].unsqueeze(0))
+
+        for i in range(20):
+            adv_images.requires_grad = True            
+            output = target_model(adv_images)
+            
+            output_1 = model_1(adv_images)
+            cost = loss(output_1, true_target).cuda()
+            cost.backward()
+            grad_1 = adv_images.grad
+            model_1.zero_grad()
+
+
+            output_2 = model_1(adv_images)
+            cost = loss(output_2, true_target)
+            cost.backward()
+            grad_2 = adv_images.grad
+            model_2.zero_grad()
+
+
+            output_3 = model_3(adv_images)
+            cost = loss(output_3, true_target)
+            cost.backward()
+            grad_3 = adv_images.grad
+            model_3.zero_grad()
+                
+            # weight = mlp_g(adv_images)
+            # grad =  grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
+            grad =  grad_1.reshape(-1, 3*299*299)*1/3.0 + grad_2.reshape(-1, 3*299*299) * 1/3.0 + grad_3.reshape(-1, 3*299*299) * 1/3.0
+            grad = grad.reshape(-1, 3, 299, 299)
+
+            grad = grad / torch.mean(torch.abs(grad),
+                                     dim=(1, 2, 3), keepdim=True)
+            grad = grad+ momentum * 1.0
+            momentum =grad
+
+            adv_images = adv_images.detach() + 2/255 * grad.sign()
+            delta = torch.clamp(adv_images - input, 
+                                min=-8/255, max=8/255)
+            adv_images = torch.clamp(input+ delta, min=0, max=1).detach()
         
-        output_1 = model_1(input)
-        cost = loss(output_1, true_target).cuda()
-        cost.backward()
+
+        if input_size != val_size:
+            resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
+            output = target_model(resize_adv_images)
+        else:
+            output = target_model(adv_images)
         
-        grad_1 = input.grad
-        model_1.zero_grad()
+        _, pre = torch.max(output.data, 1)
+
+        total += true_target.size(0)
+
+        correct += (pre != true_target).sum()
+
+        train_bar.set_description(" epoch: [{}], asr: {:.4f}".format( i, correct.item() / total *100))
 
 
-        output_2 = model_1(input)
-        cost = loss(output_2, true_target)
-        cost.backward()
-
-        grad_2 = input.grad
-        model_2.zero_grad()
-
-
-        output_3 = model_3(input)
-        cost = loss(output_3, true_target)
-        cost.backward()
-
-        grad_3 = input.grad
-        model_3.zero_grad()
-
-        grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
-        grad_s = grad_s.reshape(-1, 3*3*299*299)
-
-    
-        weight = mlp_g(grad_s)
-        g_hat = grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
-        g_hat = g_hat.reshape(-1, 3, 299, 299)
-        cost = loss(g_hat, g)
-
-        opt.zero_grad()
-        cost.backward()
-        opt.step()
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
