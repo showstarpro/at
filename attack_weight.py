@@ -31,6 +31,7 @@ from pathlib import Path
 from attack.fgsm import FGSM
 from utils.load import load_model, load_target_model, load_transform
 import timm
+import utils
 
 
 class MLP(torch.nn.Module):
@@ -120,7 +121,7 @@ def main(args):
         torch.manual_seed(seed)
         torch.cuda.set_device(args.sgpu)
         print(torch.cuda.device_count())
-        print('Using CUDA..')
+        print(f'Using CUDA:{args.sgpu}')
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
     # if args.ngpu > 1:
 
@@ -167,7 +168,7 @@ def main(args):
         input = input.to(device).float()
         target = target.to(device).long()
 
-        output = target_model(input)
+        output = target_model(utils.norm_image(input))
         
         pre = torch.argmax(output,dim=-1).detach()
         correct += (pre==target).sum().cpu()
@@ -185,7 +186,7 @@ def main(args):
             for idx,(model) in enumerate(surrogate_models):
                 # input = input.detach()
                 model.zero_grad()
-                output = model(adv_images)
+                output = model(utils.norm_image(adv_images))
                 loss = criterion(output, target)
                 loss.backward()
                 grad_back[:,idx] = adv_images.grad
@@ -214,7 +215,7 @@ def main(args):
         #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
         #     output = target_model(resize_adv_images)
         # else:
-        output = target_model(adv_images)
+        output = target_model(utils.norm_image(adv_images))
         
         # _, pre = torch.max(output.data, 1)
         pre = torch.argmax(output, -1)

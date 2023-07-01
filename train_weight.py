@@ -31,6 +31,7 @@ from pathlib import Path
 from attack.fgsm import FGSM
 from utils.load import load_model, load_target_model, load_transform
 import timm
+import utils
 
 
 class MLP(torch.nn.Module):
@@ -171,7 +172,7 @@ def main(args):
         for idx,(model) in enumerate(surrogate_models):
             # input = input.detach()
             model.zero_grad()
-            output = model(input)
+            output = model(utils.norm_image(input))
             loss = criterion(output, target)
             loss.backward()
             grad_back[:,idx] = input.grad
@@ -192,7 +193,6 @@ def main(args):
         train_bar.set_description(" step: [{}], asr: {:.4f}".format( i, loss_grad.item()))
         # adv_images = input + 8/255 * images.grad.sign()
         # adv_images = torch.clamp(adv_images, 0, 1)
-        break
     
     print('Saving..')
     save_path = os.path.join(save_dir,'mlp_grad.pkl')

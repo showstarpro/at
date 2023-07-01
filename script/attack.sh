@@ -12,6 +12,7 @@ target_model="resnet50"
 target_model_path="../data/model"
 loss="ce"
 device="cuda"
+sgpu=0
 
 training_start_params=" \
 --attack_name ${attack_name} \
@@ -27,7 +28,8 @@ training_start_params=" \
 --target_model ${target_model} \
 --target_model_path ${target_model_path} \
 --loss ${loss} \
---device ${device}
+--device ${device} \
+--sgpu ${sgpu}
 "
 
 python attack_weight.py ${training_start_params}
