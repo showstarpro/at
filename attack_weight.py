@@ -29,7 +29,7 @@ from tqdm import  tqdm
 import torchvision.datasets as datasets
 from pathlib import Path
 from attack.fgsm import FGSM
-from utils.load import load_surrogate_model, load_target_model, load_transform
+from utils.load import load_model, load_target_model, load_transform
 import timm
 
 
@@ -45,8 +45,6 @@ class MLP(torch.nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.ln = nn.Linear(128,out_channels)
         self.softmax = torch.nn.Softmax()
-
-
     def forward(self, x):
         x = self.cn1(x)
         x = self.relu1(x)
@@ -57,13 +55,8 @@ class MLP(torch.nn.Module):
         x = x.reshape(-1,128)
         x = self.ln(x)
         x = self.softmax(x)
-
-
         return x
 
-
-    
-    
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Attack in pytorch', add_help=False)
@@ -75,6 +68,8 @@ def get_args_parser():
     parser.add_argument('--eps', default=16/255.0, type=float,
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
+
+    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -88,15 +83,9 @@ def get_args_parser():
                         help='path where to save, empty for no saving')
     
     # Model parameters
-    parser.add_argument('--model_1', default='inc_v3', type=str,
-                        help='the white model')
-    parser.add_argument('--model_2', default='inc_res_v2', type=str,
-                        help='the white model')
-    parser.add_argument('--model_3', default='inc_v4', type=str,
-                        help='the white model')
-    parser.add_argument('--model_4', default='inc_res_v2_ens', type=str,
-                    help='the white model')
-    parser.add_argument('--model_path', default=None, type=str,
+    parser.add_argument('--surrogate_models', default='inc_v3', type=str, nargs='+',
+                        help='the surrogate_models list')
+    parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
     parser.add_argument('--target_model', default='resnet101', type=str,
                         help='the target model')
@@ -117,7 +106,6 @@ def get_args_parser():
     return parser
 
 
-
 def main(args):
     seed = args.seed
     np.random.seed(seed)
@@ -125,6 +113,7 @@ def main(args):
     batch_size = args.batch_size
     eps = args.eps
 
+    
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         cudnn.benchmark = True
@@ -132,7 +121,7 @@ def main(args):
         torch.cuda.set_device(args.sgpu)
         print(torch.cuda.device_count())
         print('Using CUDA..')
-    
+    device = torch.device('cuda') if use_cuda else torch.device('cpu')
     # if args.ngpu > 1:
 
 
@@ -147,147 +136,72 @@ def main(args):
 
     mseloss = torch.nn.MSELoss()
     if args.loss == 'ce':
-        loss = nn.CrossEntropyLoss()
-    
+        criterion = nn.CrossEntropyLoss()
     
     # load model
     print("load model!!!")
-    model_1 = load_surrogate_model(args.model_1)
-    model_2 = load_surrogate_model(args.model_2)
-    model_3 = load_surrogate_model(args.model_3)
-
-
+    surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
+    
     # load target_model
     print("load target_model!!!")
-    target_model, val_size = load_target_model(args.target_model)
-    
-    model_1 = model_1.cuda()
-    model_2 = model_2.cuda()
-    model_3 = model_3.cuda()
-
-    target_model = target_model.cuda()
-    model_1.eval()
-    model_2.eval()
-    model_3.eval()
-
-    target_model.eval()
+    val_size = 224
+    target_model= load_target_model(args.target_model).to(device).eval()
 
     print("Attack is start!!!")
-    rgf = RGF(model=target_model, loss= loss, q=20, sigma=1e-4)
-    mlp_g = MLP(3).cuda()
-    mlp_g.train()
-    opt = optim.SGD(mlp_g.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
+    rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
+    mlp_grad = MLP(len(surrogate_models)).to(device).train()
+    # opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
+
 
     total = 0
     correct =0
     train_bar = tqdm(data_loader_val)
     num = 0
     since = time.time()
-    # for i, (input, true_target) in enumerate(train_bar):
-    #     input = input.cuda().float()
-    #     true_target = true_target.cuda().long()
-    #     input.requires_grad = True
-        
-    #     g = torch.rand_like(input).cuda().float()
-    #     for i in range(input.size(0)):
-    #         g[i] = rgf.query(input[i].unsqueeze(0), true_target[i].unsqueeze(0))
-        
-    #     output_1 = model_1(input)
-    #     cost = loss(output_1, true_target).cuda()
-    #     cost.backward()
-        
-    #     grad_1 = input.grad
-    #     model_1.zero_grad()
 
-
-    #     output_2 = model_1(input)
-    #     cost = loss(output_2, true_target)
-    #     cost.backward()
-
-    #     grad_2 = input.grad
-    #     model_2.zero_grad()
-
-
-    #     output_3 = model_3(input)
-    #     cost = loss(output_3, true_target)
-    #     cost.backward()
-
-    #     grad_3 = input.grad
-    #     model_3.zero_grad()
-
-    #     # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
-    #     # grad_s = grad_s.reshape(-1, 3*3*299*299)
-
-    
-    #     weight = mlp_g(input)
-    #     g_hat = grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
-    #     g_hat = g_hat.reshape(-1, 3*299*299)
-    #     ct = mseloss(g_hat, g.reshape(-1, 3*299*299))
-
-
-    #     opt.zero_grad()
-    #     ct.backward()
-    #     opt.step()
-        
-
-
-    #     train_bar.set_description(" epoch: [{}], asr: {:.4f}".format( i, ct.item()))
-    #     # adv_images = input + 8/255 * images.grad.sign()
-    #     # adv_images = torch.clamp(adv_images, 0, 1)
-    
-    # print('Saving..')
-    # torch.save(mlp_g.state_dict(), os.path.join("./models/mlp_g.t7"))
-
-    
-    mlp_g.load_state_dict(torch.load("./models/mlp_g.t7"))
-    for i, (input, true_target) in enumerate(train_bar):
-        input = input.cuda()
-        true_target = true_target.cuda()
+    save_dir = args.save_dir
+    save_path = os.path.join(save_dir,'mlp_grad.pkl')
+    mlp_grad.load_state_dict(torch.load(save_path))
+    for i, (input, target) in enumerate(train_bar):
+        input = input.to(device).float()
+        target = target.to(device).long()
 
         momentum = torch.zeros_like(input).detach().cuda()
         adv_images = input.clone().detach()
         
-
         for i in range(20):
             adv_images.requires_grad = True            
-            output = target_model(adv_images)
+            # output = target_model(adv_images)
+
+            grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
+            # for model_index in range(len(surrogate_models)):
+            for idx,(model) in enumerate(surrogate_models):
+                # input = input.detach()
+                model.zero_grad()
+                output = model(adv_images)
+                loss = criterion(output, target)
+                loss.backward()
+                grad_back[:,idx] = adv_images.grad
             
-            output_1 = model_1(adv_images)
-            cost = loss(output_1, true_target).cuda()
-            cost.backward()
-            grad_1 = adv_images.grad
-            model_1.zero_grad()
+            # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
+            # grad_s = grad_s.reshape(-1, 3*3*299*299)
 
-
-            output_2 = model_1(adv_images)
-            cost = loss(output_2, true_target)
-            cost.backward()
-            grad_2 = adv_images.grad
-            model_2.zero_grad()
-
-
-            output_3 = model_3(adv_images)
-            cost = loss(output_3, true_target)
-            cost.backward()
-            grad_3 = adv_images.grad
-            model_3.zero_grad()
+            grad_weight = mlp_grad(input)
+            grad_hat = torch.sum((grad_back*grad_weight),dim=1)
                 
             # weight = mlp_g(adv_images)
             # grad =  grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
-            grad =  grad_1.reshape(-1, 3*299*299)*1/3.0 + grad_2.reshape(-1, 3*299*299) * 1/3.0 + grad_3.reshape(-1, 3*299*299) * 1/3.0
-            grad = grad.reshape(-1, 3, 299, 299)
+            grad = grad_hat
 
-            grad = grad / torch.mean(torch.abs(grad),
-                                     dim=(1, 2, 3), keepdim=True)
+            grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
             grad = grad+ momentum * 1.0
             momentum =grad
 
-            adv_images = adv_images.detach() + 2/255 * grad.sign()
-            delta = torch.clamp(adv_images - input, 
-                                min=-8/255, max=8/255)
-            adv_images = torch.clamp(input+ delta, min=0, max=1).detach()
+            with torch.no_grad():
+                adv_images = adv_images + 2/255 * grad.sign()
+                delta = torch.clamp(adv_images - input, min=-8/255, max=8/255)
+                adv_images = torch.clamp(input+ delta, min=0, max=1)
         
-
         if input_size != val_size:
             resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
             output = target_model(resize_adv_images)
@@ -296,9 +210,9 @@ def main(args):
         
         _, pre = torch.max(output.data, 1)
 
-        total += true_target.size(0)
+        total += target.size(0)
 
-        correct += (pre != true_target).sum()
+        correct += (pre != target).sum()
 
         train_bar.set_description(" epoch: [{}], asr: {:.4f}".format( i, correct.item() / total *100))
 
