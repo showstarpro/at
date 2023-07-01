@@ -1,5 +1,5 @@
 import torch
-
+import utils
 
 class RGF:
     def __init__(self, model, loss, q, sigma):
@@ -11,7 +11,7 @@ class RGF:
 
     def query(self, image, label):
         cur_image = image.detach()
-        output = self.model(cur_image)
+        output = self.model(utils.norm_image(cur_image))
         cost = self.loss(output, label)
 
         # random sample vectors
@@ -29,7 +29,7 @@ class RGF:
 
         outputs = []
         for u in orthos:
-            outputs.append(self.model(cur_image + self.sigma * u))
+            outputs.append(self.model(utils.norm_image(cur_image + self.sigma * u)))
         outputs = torch.stack(outputs,dim=0)
 
         g = 0

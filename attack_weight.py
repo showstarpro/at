@@ -31,6 +31,7 @@ from pathlib import Path
 from attack.fgsm import FGSM
 from utils.load import load_model, load_target_model, load_transform
 import timm
+import utils
 
 
 class MLP(torch.nn.Module):
@@ -120,7 +121,7 @@ def main(args):
         torch.manual_seed(seed)
         torch.cuda.set_device(args.sgpu)
         print(torch.cuda.device_count())
-        print('Using CUDA..')
+        print(f'Using CUDA:{args.sgpu}')
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
     # if args.ngpu > 1:
 
@@ -156,6 +157,7 @@ def main(args):
 
     total = 0
     correct =0
+    success_num = 0
     train_bar = tqdm(data_loader_val)
     since = time.time()
 
@@ -166,9 +168,11 @@ def main(args):
         input = input.to(device).float()
         target = target.to(device).long()
 
-        output = target_model(adv_images)
+        output = target_model(utils.norm_image(input))
+        
         pre = torch.argmax(output,dim=-1).detach()
         correct += (pre==target).sum().cpu()
+        correct_index = pre==target
 
         momentum = torch.zeros_like(input).detach().to(device)
         adv_images = input.clone().detach()
@@ -182,7 +186,7 @@ def main(args):
             for idx,(model) in enumerate(surrogate_models):
                 # input = input.detach()
                 model.zero_grad()
-                output = model(adv_images)
+                output = model(utils.norm_image(adv_images))
                 loss = criterion(output, target)
                 loss.backward()
                 grad_back[:,idx] = adv_images.grad
@@ -211,22 +215,21 @@ def main(args):
         #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
         #     output = target_model(resize_adv_images)
         # else:
-        output = target_model(adv_images)
+        output = target_model(utils.norm_image(adv_images))
         
-        _, pre = torch.max(output.data, 1)
-
+        # _, pre = torch.max(output.data, 1)
+        pre = torch.argmax(output, -1)
         total += target.size(0)
-        
+        success_num += (pre[correct_index] != target[correct_index]).sum().cpu()
 
-        success_num += (pre != target).sum().cpu()
-
-        train_bar.set_description(" step: [{}], asr: {:.4f}".format( i, success_num.item() / correct.item() *100))
+        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format( i, correct.item() / total *100,success_num.item() / correct.item() *100))
 
 
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print("Accuracy of attack: {:.4f}".format(correct.item()/total *100))
+    print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
+    print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
 
 
 
