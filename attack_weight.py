@@ -44,7 +44,7 @@ class MLP(torch.nn.Module):
         self.relu2 = torch.nn.ReLU()
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.ln = nn.Linear(128,out_channels)
-        self.softmax = torch.nn.Softmax()
+        self.softmax = torch.nn.Softmax(dim=-1)
     def forward(self, x):
         x = self.cn1(x)
         x = self.relu1(x)
@@ -60,12 +60,12 @@ class MLP(torch.nn.Module):
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Attack in pytorch', add_help=False)
-    parser.add_argument('--name', default='fgsm', type=str,
+    parser.add_argument('--attack_name', default='fgsm', type=str,
                         help='attack method',
                         choices=['fgsm', 'mi_fgsm', 'ni_fgsm', 'vmi_fgsm'])
     parser.add_argument('--batch_size', default=8, type=int,
                         help='Batch size per GPU')
-    parser.add_argument('--eps', default=16/255.0, type=float,
+    parser.add_argument('--eps', default=8, type=float,
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
 
@@ -75,7 +75,7 @@ def get_args_parser():
     parser.add_argument('--dataset', default='imagenet', type=str,
                         help='dataset',
                         choices=['imagenet', 'cifar10', 'cifar100'])
-    parser.add_argument('--root', default='/home/dataset/ImageNet/ILSVRC2012_img_val', type=str,
+    parser.add_argument('--dataset_path', default='/home/dataset/ImageNet/ILSVRC2012_img_val', type=str,
                         help='dataset path')
     parser.add_argument('--target_file', default='/home/liuhanpeng/at/data/val_rs.csv', type=str,
                         help='the figures attacked')
@@ -111,7 +111,7 @@ def main(args):
     np.random.seed(seed)
 
     batch_size = args.batch_size
-    eps = args.eps
+    eps = args.eps/255
 
     
     use_cuda = torch.cuda.is_available()
@@ -127,8 +127,8 @@ def main(args):
 
     # load dataset
     print("load dataset!!!")
-    transform, input_size = load_transform(args.model_1, args)
-    dataset = Dataset(root=args.root, target_file=args.target_file, transform=transform)
+    transform, input_size = load_transform(args=args)
+    dataset = Dataset(root=args.dataset_path, target_file=args.target_file, transform=transform)
 
     sampler_val = data.SequentialSampler(dataset)
     data_loader_val = data.DataLoader(dataset=dataset,sampler=sampler_val, batch_size=batch_size, shuffle=False, num_workers=8)
@@ -140,12 +140,13 @@ def main(args):
     
     # load model
     print("load model!!!")
+    print(args.surrogate_models)
     surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
     
     # load target_model
     print("load target_model!!!")
     val_size = 224
-    target_model= load_target_model(args.target_model).to(device).eval()
+    target_model= load_model(args.target_model).to(device).eval()
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
@@ -156,7 +157,6 @@ def main(args):
     total = 0
     correct =0
     train_bar = tqdm(data_loader_val)
-    num = 0
     since = time.time()
 
     save_dir = args.save_dir
@@ -166,7 +166,11 @@ def main(args):
         input = input.to(device).float()
         target = target.to(device).long()
 
-        momentum = torch.zeros_like(input).detach().cuda()
+        output = target_model(adv_images)
+        pre = torch.argmax(output,dim=-1).detach()
+        correct += (pre==target).sum().cpu()
+
+        momentum = torch.zeros_like(input).detach().to(device)
         adv_images = input.clone().detach()
         
         for i in range(20):
@@ -187,6 +191,7 @@ def main(args):
             # grad_s = grad_s.reshape(-1, 3*3*299*299)
 
             grad_weight = mlp_grad(input)
+            grad_weight = grad_weight[:,:,None,None,None]
             grad_hat = torch.sum((grad_back*grad_weight),dim=1)
                 
             # weight = mlp_g(adv_images)
@@ -202,19 +207,20 @@ def main(args):
                 delta = torch.clamp(adv_images - input, min=-8/255, max=8/255)
                 adv_images = torch.clamp(input+ delta, min=0, max=1)
         
-        if input_size != val_size:
-            resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
-            output = target_model(resize_adv_images)
-        else:
-            output = target_model(adv_images)
+        # if input_size != val_size:
+        #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
+        #     output = target_model(resize_adv_images)
+        # else:
+        output = target_model(adv_images)
         
         _, pre = torch.max(output.data, 1)
 
         total += target.size(0)
+        
 
-        correct += (pre != target).sum()
+        success_num += (pre != target).sum().cpu()
 
-        train_bar.set_description(" epoch: [{}], asr: {:.4f}".format( i, correct.item() / total *100))
+        train_bar.set_description(" step: [{}], asr: {:.4f}".format( i, success_num.item() / correct.item() *100))
 
 
 
