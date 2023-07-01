@@ -44,7 +44,7 @@ class MLP(torch.nn.Module):
         self.relu2 = torch.nn.ReLU()
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.ln = nn.Linear(128,out_channels)
-        self.softmax = torch.nn.Softmax()
+        self.softmax = torch.nn.Softmax(dim=-1)
 
 
     def forward(self, x):
@@ -176,10 +176,11 @@ def main(args):
             loss.backward()
             grad_back[:,idx] = input.grad
         
+        
         # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
         # grad_s = grad_s.reshape(-1, 3*3*299*299)
-
         grad_weight = mlp_grad(input)
+        grad_weight = grad_weight[:,:,None,None,None]
         grad_hat = torch.sum((grad_back*grad_weight),dim=1)
         # g_hat = g_hat.reshape(-1, 3*299*299)
         loss_grad = mseloss(grad_hat,grad_query)
@@ -191,6 +192,7 @@ def main(args):
         train_bar.set_description(" step: [{}], asr: {:.4f}".format( i, loss_grad.item()))
         # adv_images = input + 8/255 * images.grad.sign()
         # adv_images = torch.clamp(adv_images, 0, 1)
+        break
     
     print('Saving..')
     save_path = os.path.join(save_dir,'mlp_grad.pkl')

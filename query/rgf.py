@@ -23,20 +23,18 @@ class RGF:
         orthos = []
         for u in us:
             for ou in orthos:
-                u = u - torch.sum(u * ou) * ou
-            u = u / torch.sqrt(torch.sum(u * u))
+                u = u - (torch.sum(u * ou,dim=[1,2,3]))[:,None,None,None] * ou
+            u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
             orthos.append(u)
 
-        images = []
+        outputs = []
         for u in orthos:
-            images.append(cur_image + self.sigma * u)
-        images = torch.cat(images)
-
-        outputs = self.model(images)
+            outputs.append(self.model(cur_image + self.sigma * u))
+        outputs = torch.stack(outputs,dim=0)
 
         g = 0
         for i in range(self.q):
-            cost_q = self.loss(outputs[i].unsqueeze(0), label)
+            cost_q = self.loss(outputs[i], label)
             g += orthos[i] * (cost_q - cost) / self.sigma
 
         return g
