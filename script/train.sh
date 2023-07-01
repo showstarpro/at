@@ -1,15 +1,15 @@
 batch_size=8
-save_dir='../data/model'
-dataset='imagenet'
-dataset_path='../data/dataset'
-target_file='../data/at/val_rs.csv'
-output_dir=''
-surrogate_models=''
-model_path='../data/model'
-target_model=''
-target_model_path='../data/model'
-loss='ce'
-device='cuda'
+save_dir="../data/model"
+dataset="imagenet"
+dataset_path="../data/dataset"
+target_file="../data/at/val_rs.csv"
+output_dir="../data"
+surrogate_models="inception_v4 resnet18 densenet161 vgg16_bn"
+model_path="../data/model"
+target_model="resnet50"
+target_model_path="../data/model"
+loss="ce"
+device="cuda"
 
 training_start_params=" \
 --batch_size ${batch_size} \
@@ -23,6 +23,7 @@ training_start_params=" \
 --target_model ${target_model} \
 --target_model_path ${target_model_path} \
 --loss ${loss} \
---device ${device} \
+--device ${device}
+"
 
 python train_weight.py ${training_start_params}

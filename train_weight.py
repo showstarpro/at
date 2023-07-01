@@ -114,9 +114,6 @@ def main(args):
     np.random.seed(seed)
 
     batch_size = args.batch_size
-    eps = args.eps
-
-    
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         cudnn.benchmark = True
@@ -130,7 +127,7 @@ def main(args):
 
     # load dataset
     print("load dataset!!!")
-    transform, input_size = load_transform(args.model_1, args)
+    transform, input_size = load_transform(args=args)
     dataset = Dataset(root=args.dataset_path, target_file=args.target_file, transform=transform)
 
     sampler_val = data.SequentialSampler(dataset)
@@ -143,12 +140,13 @@ def main(args):
     
     # load model
     print("load model!!!")
+    print(args.surrogate_models)
     surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
     
     # load target_model
     print("load target_model!!!")
     val_size = 224
-    target_model= load_target_model(args.target_model).to(device).eval()
+    target_model= load_model(args.target_model).to(device).eval()
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss=criterion, q=20, sigma=1e-4)

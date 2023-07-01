@@ -4,7 +4,7 @@ import torchvision.transforms as transforms
 
 
 
-def load_transform(name, args):
+def load_transform(name=None, args=None):
     input_size = 229
     if args.dataset == 'imagenet':
         # if name == 'resnet101':
@@ -50,11 +50,10 @@ def load_model(model_name):
     ]
     if model_name in timm_model_list:
         model = timm.create_model(model_name, pretrained=True)
-    if model_name == vision_model_list:
+    elif model_name in vision_model_list:
         model = getattr(models, model_name)(pretrained=True)
-        model = models.resnet101(pretrained=True)
     else:
-        raise Exception(f"Surrogate_model name must be in {timm_model_list} or {vision_model_list}")
+        raise Exception(f"Surrogate_model name: {model_name} must be in {timm_model_list} or {vision_model_list}")
 
     return model
     
