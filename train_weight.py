@@ -46,6 +46,7 @@ class MLP(torch.nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.ln = nn.Linear(128,out_channels)
         self.softmax = torch.nn.Softmax(dim=-1)
+        # self.weights_init_kaiming()
 
 
     def forward(self, x):
@@ -61,6 +62,19 @@ class MLP(torch.nn.Module):
 
 
         return x
+
+    def weights_init_kaiming(self):
+        for m in self.modules():
+            classname = m.__class__.__name__
+            # print(classname)
+            if classname.find('Conv') != -1:
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in',nonlinearity='relu')
+            elif classname.find('Linear') != -1:
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_out',nonlinearity='relu')
+                nn.init.constant_(m.bias.data, 0.0)
+            elif classname.find('BatchNorm1d') != -1:
+                nn.init.normal_(m.weight.data, 1.0, 0.02)
+                nn.init.constant_(m.bias.data, 0.0)
 
 
     
@@ -155,47 +169,84 @@ def main(args):
     opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
 
     save_dir = args.save_dir
+    eps = 16/255
+    attack_iter = 10
+    iter_eps = eps/attack_iter
 
-    train_bar = tqdm(data_loader_val)
-    for i, (input, target) in enumerate(train_bar):
-        input = input.to(device).float()
-        target = target.to(device).long()
-        input.requires_grad = True
-        
-        # grad_query = torch.zeros_like(input)
-        # for i in range(input.size(0)):
-        #     grad_query[i] = rgf.query(input[i:i+1], target[i:i+1])
-        grad_query = rgf.query(input,target)
-        
-        grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
-        # for model_index in range(len(surrogate_models)):
-        for idx,(model) in enumerate(surrogate_models):
-            # input = input.detach()
-            model.zero_grad()
-            output = model(utils.norm_image(input))
-            loss = criterion(output, target)
-            loss.backward()
-            grad_back[:,idx] = input.grad
-        
-        
-        # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
-        # grad_s = grad_s.reshape(-1, 3*3*299*299)
-        grad_weight = mlp_grad(input)
-        grad_weight = grad_weight[:,:,None,None,None]
-        grad_hat = torch.sum((grad_back*grad_weight),dim=1)
-        # g_hat = g_hat.reshape(-1, 3*299*299)
-        loss_grad = mseloss(grad_hat,grad_query)
 
-        opt.zero_grad()
-        loss_grad.backward()
-        opt.step()
+    # train_bar = tqdm(data_loader_val)
+    max_epoch = 2
+    for epoch in range(max_epoch):
+        train_bar = tqdm(data_loader_val)
+        loss_sum = 0
+        acc_list = []
+        sum = 0
+        for i, (input, target) in enumerate(train_bar):
+            input = input.to(device).float()
+            target = target.to(device).long()
+            input.requires_grad = True
+            adv_images = input.clone()
+            # grad_query = torch.zeros_like(input)
+            # for i in range(input.size(0)):
+            #     grad_query[i] = rgf.query(input[i:i+1], target[i:i+1])
+            # grad_query = rgf.query(input,target)
+            for attack_i in range(10):
+                adv_images = adv_images.detach()
+                adv_images.requires_grad = True
+                sum+=adv_images.shape[0]
+                output = target_model(utils.norm_image(adv_images))
+                loss = criterion(output, target)
+                loss.backward()
+                grad_query = adv_images.grad.clone().detach()
+                with torch.no_grad():
+                    grad = grad_query
+                    grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
+
+                    adv_images = adv_images + iter_eps * grad.sign()
+                    delta = torch.clamp(adv_images - input, min=-eps, max=eps)
+                    adv_images = torch.clamp(input+ delta, min=0, max=1)
+
+                # adv_images.grad.zero_()
+                adv_images.requires_grad = True
+                grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
+                # for model_index in range(len(surrogate_models)):
+                for idx,(model) in enumerate(surrogate_models):
+                    # input = input.detach()
+                    model.zero_grad()
+                    output = model(utils.norm_image(adv_images))
+                    loss = criterion(output, target)
+                    loss.backward()
+                    grad_back[:,idx] = torch.nn.functional.normalize(adv_images.grad)
+                    # grad_back[:,idx] = adv_images.grad
+                
+                
+                # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
+                # grad_s = grad_s.reshape(-1, 3*3*299*299)
+                grad_weight = mlp_grad(adv_images)
+                grad_weight = grad_weight[:,:,None,None,None]
+                grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+                # g_hat = g_hat.reshape(-1, 3*299*299)
+                loss_grad = mseloss(grad_hat,grad_query)
+
+                opt.zero_grad()
+                loss_grad.backward()
+                opt.step()
+
+                sign_learn = grad_query.sign()
+                sign_query = grad_hat.sign()
+                # same_num = (sign_learn == sign_query).sum(dim=(1,2,3)).cpu().numpy()
+                same_num = ((sign_learn - sign_query) == 0).sum(dim=(1,2,3)).cpu().numpy()
+                loss_sum += loss_grad.item()
+                acc_list.append(same_num)
+            acc_np = np.concatenate(acc_list,axis=0).mean()
+            acc_np = acc_np / (grad_query.shape[1]*grad_query.shape[2]*grad_query.shape[3])
+            
+            train_bar.set_description("epoch: {} step: [{}], loss: {:.8f} acc: {:.8f}".format(epoch, i, loss_sum/sum,acc_np))
+            # adv_images = input + 8/255 * images.grad.sign()
+            # adv_images = torch.clamp(adv_images, 0, 1)
         
-        train_bar.set_description(" step: [{}], asr: {:.4f}".format( i, loss_grad.item()))
-        # adv_images = input + 8/255 * images.grad.sign()
-        # adv_images = torch.clamp(adv_images, 0, 1)
-    
     print('Saving..')
-    save_path = os.path.join(save_dir,'mlp_grad.pkl')
+    save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
     torch.save(mlp_grad.state_dict(), save_path)

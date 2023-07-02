@@ -47,6 +47,9 @@ class MLP(torch.nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.ln = nn.Linear(128,out_channels)
         self.softmax = torch.nn.Softmax(dim=-1)
+        # self.weights_init_kaiming()
+
+
     def forward(self, x):
         x = self.cn1(x)
         x = self.relu1(x)
@@ -57,18 +60,31 @@ class MLP(torch.nn.Module):
         x = x.reshape(-1,128)
         x = self.ln(x)
         x = self.softmax(x)
+
+
         return x
 
+    def weights_init_kaiming(self):
+        for m in self.modules():
+            classname = m.__class__.__name__
+            # print(classname)
+            if classname.find('Conv') != -1:
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in',nonlinearity='relu')
+            elif classname.find('Linear') != -1:
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_out',nonlinearity='relu')
+                nn.init.constant_(m.bias.data, 0.0)
+            elif classname.find('BatchNorm1d') != -1:
+                nn.init.normal_(m.weight.data, 1.0, 0.02)
+                nn.init.constant_(m.bias.data, 0.0)
+
+
+    
+    
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Attack in pytorch', add_help=False)
-    parser.add_argument('--attack_name', default='fgsm', type=str,
-                        help='attack method',
-                        choices=['fgsm', 'mi_fgsm', 'ni_fgsm', 'vmi_fgsm'])
     parser.add_argument('--batch_size', default=8, type=int,
                         help='Batch size per GPU')
-    parser.add_argument('--eps', default=8, type=float,
-                        help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
 
     parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
@@ -108,21 +124,19 @@ def get_args_parser():
     return parser
 
 
+
 def main(args):
     seed = args.seed
     np.random.seed(seed)
 
     batch_size = args.batch_size
-    eps = args.eps/255
-
-    
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         cudnn.benchmark = True
         torch.manual_seed(seed)
         torch.cuda.set_device(args.sgpu)
         print(torch.cuda.device_count())
-        print(f'Using CUDA:{args.sgpu}')
+        print('Using CUDA..')
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
     # if args.ngpu > 1:
 
@@ -142,8 +156,8 @@ def main(args):
     
     # load model
     print("load model!!!")
-    print(args.surrogate_models)
-    surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
+    # print(args.surrogate_models)
+    # surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
     
     # load target_model
     print("load target_model!!!")
@@ -151,108 +165,96 @@ def main(args):
     target_model= load_model(args.target_model).to(device).eval()
 
     print("Attack is start!!!")
-    rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
-    # mlp_grad = Based_AutoEncoder_More().to(device).eval()
-    mlp_grad = MLP(len(surrogate_models)).to(device).eval()
-    # opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
-
-
-    total = 0
-    correct =0
-    success_num = 0
-    train_bar = tqdm(data_loader_val)
-    since = time.time()
+    rgf = RGF(model=target_model, loss=criterion, q=20, sigma=1e-4)
+    mlp_grad = Based_AutoEncoder_More().to(device).train()
+    # mlp_grad = MLP(len(surrogate_models)).to(device).train()
+    opt = optim.SGD(mlp_grad.parameters(), lr=1e-2, momentum=0.9, weight_decay=1e-5)
 
     save_dir = args.save_dir
-    save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
-    # mlp_grad.load_state_dict(torch.load(save_path))
-    same_num_list = [0 for i in range(len(surrogate_models))]
-    sum = 0
-    for step, (input, target) in enumerate(train_bar):
-        input = input.to(device).float()
-        target = target.to(device).long()
+    eps = 16/255
+    attack_iter = 10
+    iter_eps = eps/attack_iter
 
-        output = target_model(utils.norm_image(input))
-        
-        pre = torch.argmax(output,dim=-1).detach()
-        correct += (pre==target).sum().cpu()
-        correct_index = pre==target
 
-        momentum = torch.zeros_like(input).detach().to(device)
-        adv_images = input.clone().detach()
-        
-        for i in range(20):
-            adv_images = adv_images.detach()
-            adv_images.requires_grad = True
-
-            # white        
-            # output = target_model(adv_images)
-            # loss = criterion(output, target)
-            # loss.backward()
-            # grad = adv_images.grad
-            
-            # black
-            grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
-            # # for model_index in range(len(surrogate_models)):
-            for idx,(model) in enumerate(surrogate_models):
-                # input = input.detach()
-                model.zero_grad()
-                output = model(utils.norm_image(adv_images))
+    # train_bar = tqdm(data_loader_val)
+    max_epoch = 10
+    for epoch in range(max_epoch):
+        train_bar = tqdm(data_loader_val)
+        loss_sum = 0
+        acc_list = []
+        sum = 0
+        for i, (input, target) in enumerate(train_bar):
+            input = input.to(device).float()
+            target = target.to(device).long()
+            input.requires_grad = True
+            adv_images = input.clone()
+            # grad_query = torch.zeros_like(input)
+            # for i in range(input.size(0)):
+            #     grad_query[i] = rgf.query(input[i:i+1], target[i:i+1])
+            # grad_query = rgf.query(input,target)
+            for attack_i in range(10):
+                adv_images = adv_images.detach()
+                adv_images.requires_grad = True
+                sum+=adv_images.shape[0]
+                output = target_model(utils.norm_image(adv_images))
                 loss = criterion(output, target)
                 loss.backward()
+                grad_query = adv_images.grad.clone().detach()
+                with torch.no_grad():
+                    grad = grad_query
+                    grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
+
+                    adv_images = adv_images + iter_eps * grad.sign()
+                    delta = torch.clamp(adv_images - input, min=-eps, max=eps)
+                    adv_images = torch.clamp(input+ delta, min=0, max=1)
+
+                # # adv_images.grad.zero_()
+                adv_images.requires_grad = True
+                # grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
+                # # for model_index in range(len(surrogate_models)):
+                # for idx,(model) in enumerate(surrogate_models):
+                #     # input = input.detach()
+                #     model.zero_grad()
+                #     output = model(utils.norm_image(adv_images))
+                #     loss = criterion(output, target)
+                #     loss.backward()
+                #     grad_back[:,idx] = adv_images.grad
                 
-                # u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
-                # grad_back[:,idx] = torch.nn.functional.normalize(adv_images.grad)
-                grad_back[:,idx] = adv_images.grad
-                # print(torch.nn.functional.normalize(adv_images.grad).shape)
+                
+                # # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
+                # # grad_s = grad_s.reshape(-1, 3*3*299*299)
+                # grad_weight = mlp_grad(adv_images)
+                # grad_weight = grad_weight[:,:,None,None,None]
+                # grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+                # # g_hat = g_hat.reshape(-1, 3*299*299)
+                # loss_grad = mseloss(grad_hat,grad_query)
 
-            # grad_weight = mlp_grad(input)
-            # print(grad_weight)
-            # grad_weight = torch.full([input.shape[0],4],1/6).type_as(input)
-            # grad_weight[:, 0] = 1/2
-            # grad_weight = grad_weight[:,:,None,None,None]
-            grad_weight = 1 / len(surrogate_models)
-            grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+                grad_learn = mlp_grad(adv_images)
+                loss_grad = mseloss(grad_learn,grad_query.sign())
 
-            #ae 
-            # grad_hat = mlp_grad(input)
+                opt.zero_grad()
+                loss_grad.backward()
+                opt.step()
 
-            with torch.no_grad():
-                # for idx in range(len(surrogate_models)):
-                #     same_num = ((grad_hat.sign() - grad_back[:,idx].sign()) == 0).sum().item()
-                #     same_num_list[idx] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*intintgrad_hat.shape[3])
-                #     # print(same_num_list[idx])
-                # sum += grad_hat.shape[0]
-
-                grad = grad_hat
-                grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
-                # grad = grad+ momentum * 1.0
-                # momentum =grad
-
-                adv_images = adv_images + 2/255 * grad.sign()
-                delta = torch.clamp(adv_images - input, min=-8/255, max=8/255)
-                adv_images = torch.clamp(input+ delta, min=0, max=1)
+                sign_learn = grad_query.sign()
+                sign_query = grad_learn.sign()
+                # same_num = (sign_learn == sign_query).sum(dim=(1,2,3)).cpu().numpy()
+                same_num = ((sign_learn - sign_query) == 0).sum(dim=(1,2,3)).cpu().numpy()
+                loss_sum += loss_grad.item()
+                acc_list.append(same_num)
+            acc_np = np.concatenate(acc_list,axis=0).mean()
+            acc_np = acc_np / (grad_query.shape[1]*grad_query.shape[2]*grad_query.shape[3])
+            
+            train_bar.set_description("epoch: {} step: [{}], loss: {:.8f} acc: {:.8f}".format(epoch, i, loss_sum/sum,acc_np))
+            # adv_images = input + 8/255 * images.grad.sign()
+            # adv_images = torch.clamp(adv_images, 0, 1)
         
-        # if input_size != val_size:
-        #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
-        #     output = target_model(resize_adv_images)
-        # else:
-        output = target_model(utils.norm_image(adv_images))
-        
-        # _, pre = torch.max(output.data, 1)
-        pre = torch.argmax(output, -1)
-        total += target.size(0)
-        success_num += (pre[correct_index] != target[correct_index]).sum().cpu()
-
-        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format(step, correct.item() / total *100,success_num.item() / correct.item() *100))
-
-    # for idx in range(4):
-    #     print(f'idx, {same_num_list[idx]/sum}')
-
-    time_elapsed = time.time() - since
-    print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
-    print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
+    print('Saving..')
+    save_path = os.path.join(save_dir,'ae_grad.pkl')
+    if not os.path.exists(save_dir):
+        os.mkdir(save_dir)
+    torch.save(mlp_grad.state_dict(), save_path)
+    print(f'model save in {save_path}')
 
 
 

@@ -11,13 +11,14 @@ class RGF:
 
     def query(self, image, label):
         cur_image = image.detach()
-        output = self.model(utils.norm_image(cur_image))
-        cost = self.loss(output, label)
+        with torch.no_grad():
+            output = self.model(utils.norm_image(cur_image))
+            cost = self.loss(output, label)
 
         # random sample vectors
         us = [] # random vectors
         for _ in range(self.q):
-            us.append(torch.randn_like(cur_image))
+            us.append(torch.randn_like(cur_image).cpu())
         
         # Gram-Schmidt. You can also call torch.linalg.qr to perform orthogonalization
         orthos = []
@@ -26,16 +27,15 @@ class RGF:
                 u = u - (torch.sum(u * ou,dim=[1,2,3]))[:,None,None,None] * ou
             u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
             orthos.append(u)
-
-        outputs = []
-        for u in orthos:
-            outputs.append(self.model(utils.norm_image(cur_image + self.sigma * u)))
-        outputs = torch.stack(outputs,dim=0)
+            # torch.linalg.qr()
 
         g = 0
-        for i in range(self.q):
-            cost_q = self.loss(outputs[i], label)
-            g += orthos[i] * (cost_q - cost) / self.sigma
+        with torch.no_grad():
+            for u in orthos:
+                u_cpu = u.clone().type_as(cur_image)
+                output =self.model(utils.norm_image(cur_image + self.sigma * u_cpu))
+                cost_q = self.loss(output, label)
+                g = g + (u_cpu * (cost_q - cost) / self.sigma)
 
         return g
 
