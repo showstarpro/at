@@ -166,7 +166,7 @@ def main(args):
     save_dir = args.save_dir
     save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
     # mlp_grad.load_state_dict(torch.load(save_path))
-    same_num_list = [0 for i in range(len(surrogate_models))]
+    same_num_list = [0 for i in range(len(surrogate_models)+1)]
     sum = 0
     for step, (input, target) in enumerate(train_bar):
         input = input.to(device).float()
@@ -186,10 +186,11 @@ def main(args):
             adv_images.requires_grad = True
 
             # white        
-            # output = target_model(adv_images)
-            # loss = criterion(output, target)
-            # loss.backward()
-            # grad = adv_images.grad
+            output = target_model(utils.norm_image(adv_images))
+            loss = criterion(output, target)
+            loss.backward()
+            grad_true = adv_images.grad
+            adv_images.grad.zero_()
             
             # black
             grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
@@ -204,6 +205,7 @@ def main(args):
                 # u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
                 # grad_back[:,idx] = torch.nn.functional.normalize(adv_images.grad)
                 grad_back[:,idx] = adv_images.grad
+                adv_images.grad.zero_()
                 # print(torch.nn.functional.normalize(adv_images.grad).shape)
 
             # grad_weight = mlp_grad(input)
@@ -218,11 +220,14 @@ def main(args):
             # grad_hat = mlp_grad(input)
 
             with torch.no_grad():
-                # for idx in range(len(surrogate_models)):
-                #     same_num = ((grad_hat.sign() - grad_back[:,idx].sign()) == 0).sum().item()
-                #     same_num_list[idx] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*intintgrad_hat.shape[3])
-                #     # print(same_num_list[idx])
-                # sum += grad_hat.shape[0]
+                for idx in range(len(surrogate_models)):
+                    
+                    same_num = ((grad_true.sign() - grad_back[:,idx].sign()) == 0).sum().item()
+                    same_num_list[idx] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*grad_hat.shape[3])
+                    # print(same_num_list[idx])
+                same_num = same_num = ((grad_true.sign() - grad_hat.sign()) == 0).sum().item()
+                same_num_list[-1] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*grad_hat.shape[3])
+                sum += grad_hat.shape[0]
 
                 grad = grad_hat
                 grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
@@ -246,8 +251,8 @@ def main(args):
 
         train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format(step, correct.item() / total *100,success_num.item() / correct.item() *100))
 
-    # for idx in range(4):
-    #     print(f'idx, {same_num_list[idx]/sum}')
+    for idx in range(len(surrogate_models)+1):
+        print(f'idx, {same_num_list[idx]/sum}')
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
