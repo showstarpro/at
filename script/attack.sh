@@ -1,5 +1,5 @@
 attack_name='mi_fgsm'
-eps=8
+eps=2
 batch_size=16
 save_dir="../data/model"
 dataset="imagenet"
@@ -8,7 +8,7 @@ target_file="../data/at/val_rs.csv"
 output_dir="../data"
 surrogate_models="inception_v4 resnet18 densenet161 vgg16_bn"
 model_path="../data/model"
-target_model="inception_v3"
+target_model="resnet50"
 target_model_path="../data/model"
 loss="ce"
 device="cuda"
