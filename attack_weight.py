@@ -70,7 +70,7 @@ def get_args_parser():
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
 
-    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
+    parser.add_argument('--save_dir', default='/home/liuhanpeng/at/models', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -84,11 +84,11 @@ def get_args_parser():
                         help='path where to save, empty for no saving')
     
     # Model parameters
-    parser.add_argument('--surrogate_models', default='inc_v3', type=str, nargs='+',
+    parser.add_argument('--surrogate_models', default=["inception_v4", "resnet18", "densenet161", "vgg16_bn"], type=str, nargs='+',
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='resnet101', type=str,
+    parser.add_argument('--target_model', default='inception_v3', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -101,7 +101,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--ngpu', default=1, type=int,
                         help='number of gpu')
-    parser.add_argument('--sgpu', default=3, type=int,
+    parser.add_argument('--sgpu', default=2, type=int,
                         help='gpu index (start)')
     
     return parser
@@ -151,7 +151,7 @@ def main(args):
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
-    mlp_grad = MLP(len(surrogate_models)).to(device).train()
+    # mlp_grad = MLP(len(surrogate_models)).to(device).train()
     # opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
 
 
@@ -161,14 +161,23 @@ def main(args):
     train_bar = tqdm(data_loader_val)
     since = time.time()
 
+    en_acc = torch.zeros(1).cuda()
+    surrogate_acc = torch.zeros(len(surrogate_models)).cuda()
+
     save_dir = args.save_dir
-    save_path = os.path.join(save_dir,'mlp_grad.pkl')
-    mlp_grad.load_state_dict(torch.load(save_path))
+    # save_path = os.path.join(save_dir,'mlp_grad.pkl')
+    # mlp_grad.load_state_dict(torch.load(save_path))
     for i, (input, target) in enumerate(train_bar):
         input = input.to(device).float()
         target = target.to(device).long()
 
+        input.requires_grad = True
         output = target_model(utils.norm_image(input))
+        cost = criterion(output, target)
+        cost.backward()
+        g_true = input.grad
+        target_model.zero_grad()
+
         
         pre = torch.argmax(output,dim=-1).detach()
         correct += (pre==target).sum().cpu()
@@ -184,19 +193,41 @@ def main(args):
             grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
             # for model_index in range(len(surrogate_models)):
             for idx,(model) in enumerate(surrogate_models):
-                # input = input.detach()
+                adv_copy = adv_images.detach()
+                adv_copy.requires_grad = True
                 model.zero_grad()
-                output = model(utils.norm_image(adv_images))
+                output = model(utils.norm_image(adv_copy))
                 loss = criterion(output, target)
                 loss.backward()
-                grad_back[:,idx] = adv_images.grad
+
+                grad_back[:,idx] = adv_copy.grad
+                sim = torch.sum(g_true.sign() == adv_copy.grad.sign())
+                sim = sim / input.size(0) / 3./ 224/224.
+                surrogate_acc[idx] += sim
+                # grad_tmp = adv_images.grad.reshape(input.size(0),-1)
+                # max_tmp = torch.max(grad_tmp, 1)[0].reshape(input.size(0), -1)
+                # min_tmp = torch.min(grad_tmp, 1)[0].reshape(input.size(0), -1)
+                # d = max_tmp - min_tmp
+                # d = d.repeat(1,3*224*224)
+                # g_tt = 2* torch.div(grad_tmp, d) -1
+                # g_tt = g_tt.reshape(input.size(0),3,224,224)
+                # grad_back[:,idx] = g_tt
+                
             
             # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
             # grad_s = grad_s.reshape(-1, 3*3*299*299)
 
-            grad_weight = mlp_grad(input)
+            # grad_weight = mlp_grad(input)
+            # grad_weight = grad_weight[:,:,None,None,None]
+
+            tmp = torch.tensor([3/8, 1/4, 1/4, 1/8]).cuda()
+            grad_weight = tmp.reshape(1, 4)
             grad_weight = grad_weight[:,:,None,None,None]
+
             grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+            en_sign = torch.sum(g_true.sign() == grad_hat.sign()) / input.size(0) / 3./ 224/224
+            # print(en_sign)
+            en_acc += en_sign
                 
             # weight = mlp_g(adv_images)
             # grad =  grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
@@ -230,6 +261,11 @@ def main(args):
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
     print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
     print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
+    print("Accuracy of model: {:.4f}".format(en_acc.item() /total/20 *100))
+    print("Accuracy of model_1: {:.4f}".format(surrogate_acc[0].item() /total/20  *100))
+    print("Accuracy of model_2: {:.4f}".format(surrogate_acc[1].item() /total/20  *100))
+    print("Accuracy of model_3: {:.4f}".format(surrogate_acc[2].item() /total/20 *100))
+    print("Accuracy of model_4: {:.4f}".format(surrogate_acc[3].item() /total/20 *100))
 
 
 
