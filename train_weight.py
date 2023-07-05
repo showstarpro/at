@@ -72,7 +72,7 @@ def get_args_parser():
                         help='Batch size per GPU')
     parser.add_argument('--seed', default=3407, type=int)
 
-    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
+    parser.add_argument('--save_dir', default='/home/liuhanpeng/at/models', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -86,11 +86,11 @@ def get_args_parser():
                         help='path where to save, empty for no saving')
     
     # Model parameters
-    parser.add_argument('--surrogate_models', default='inc_v3', type=str, nargs='+',
+    parser.add_argument('--surrogate_models', default=["inception_v4", "resnet18", "densenet161", "vgg16_bn"], type=str, nargs='+',
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='resnet101', type=str,
+    parser.add_argument('--target_model', default='resnet50', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -103,7 +103,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--ngpu', default=1, type=int,
                         help='number of gpu')
-    parser.add_argument('--sgpu', default=3, type=int,
+    parser.add_argument('--sgpu', default=1, type=int,
                         help='gpu index (start)')
     
     return parser
@@ -175,7 +175,7 @@ def main(args):
             output = model(utils.norm_image(input))
             loss = criterion(output, target)
             loss.backward()
-            grad_back[:,idx] = input.grad
+            grad_back[:,idx] = torch.nn.functional.normalize(input.grad)
         
         
         # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)

@@ -88,7 +88,7 @@ def get_args_parser():
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='inception_v3', type=str,
+    parser.add_argument('--target_model', default='inception_v4', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -156,6 +156,7 @@ def main(args):
 
 
     total = 0
+    t_acc = 0
     correct =0
     success_num = 0
     train_bar = tqdm(data_loader_val)
@@ -187,31 +188,30 @@ def main(args):
         adv_images = input.clone().detach()
         
         for i in range(20):
-            adv_images.requires_grad = True            
-            # output = target_model(adv_images)
+            adv_images.requires_grad = True
+            adv_tmp = adv_images.detach()
+            adv_tmp.requires_grad = True             
+            adv_output = target_model(adv_tmp)
+            adv_loss = criterion(adv_output, target)
+            adv_loss.backward()
+            g_adv = adv_tmp.grad
+
 
             grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
             # for model_index in range(len(surrogate_models)):
             for idx,(model) in enumerate(surrogate_models):
-                adv_copy = adv_images.detach()
+                adv_copy = adv_images.clone().detach()
                 adv_copy.requires_grad = True
                 model.zero_grad()
                 output = model(utils.norm_image(adv_copy))
                 loss = criterion(output, target)
                 loss.backward()
-
                 grad_back[:,idx] = adv_copy.grad
-                sim = torch.sum(g_true.sign() == adv_copy.grad.sign())
+                sim = torch.sum(g_adv.sign() == adv_copy.grad.sign())
                 sim = sim / input.size(0) / 3./ 224/224.
                 surrogate_acc[idx] += sim
-                # grad_tmp = adv_images.grad.reshape(input.size(0),-1)
-                # max_tmp = torch.max(grad_tmp, 1)[0].reshape(input.size(0), -1)
-                # min_tmp = torch.min(grad_tmp, 1)[0].reshape(input.size(0), -1)
-                # d = max_tmp - min_tmp
-                # d = d.repeat(1,3*224*224)
-                # g_tt = 2* torch.div(grad_tmp, d) -1
-                # g_tt = g_tt.reshape(input.size(0),3,224,224)
-                # grad_back[:,idx] = g_tt
+
+
                 
             
             # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
@@ -220,12 +220,12 @@ def main(args):
             # grad_weight = mlp_grad(input)
             # grad_weight = grad_weight[:,:,None,None,None]
 
-            tmp = torch.tensor([3/8, 1/4, 1/4, 1/8]).cuda()
+            tmp = torch.tensor([1/4, 1/4, 1/4, 1/4]).cuda()
             grad_weight = tmp.reshape(1, 4)
             grad_weight = grad_weight[:,:,None,None,None]
 
             grad_hat = torch.sum((grad_back*grad_weight),dim=1)
-            en_sign = torch.sum(g_true.sign() == grad_hat.sign()) / input.size(0) / 3./ 224/224
+            en_sign = torch.sum(g_adv.sign() == grad_hat.sign()) / input.size(0) / 3./ 224/224
             # print(en_sign)
             en_acc += en_sign
                 
@@ -241,31 +241,31 @@ def main(args):
                 adv_images = adv_images + 2/255 * grad.sign()
                 delta = torch.clamp(adv_images - input, min=-8/255, max=8/255)
                 adv_images = torch.clamp(input+ delta, min=0, max=1)
-        
-        # if input_size != val_size:
-        #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
-        #     output = target_model(resize_adv_images)
-        # else:
+
+            total += 1
+
+            adv_images.grad.zero_()
+
         output = target_model(utils.norm_image(adv_images))
         
         # _, pre = torch.max(output.data, 1)
         pre = torch.argmax(output, -1)
-        total += target.size(0)
+        t_acc +=input.size(0)
         success_num += (pre[correct_index] != target[correct_index]).sum().cpu()
 
-        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format( i, correct.item() / total *100,success_num.item() / correct.item() *100))
+        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format( i, correct.item() / t_acc *100,success_num.item() / correct.item() *100))
 
 
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
+    print("Accuracy of model: {:.4f}".format(correct.item() / t_acc  *100))
     print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
-    print("Accuracy of model: {:.4f}".format(en_acc.item() /total/20 *100))
-    print("Accuracy of model_1: {:.4f}".format(surrogate_acc[0].item() /total/20  *100))
-    print("Accuracy of model_2: {:.4f}".format(surrogate_acc[1].item() /total/20  *100))
-    print("Accuracy of model_3: {:.4f}".format(surrogate_acc[2].item() /total/20 *100))
-    print("Accuracy of model_4: {:.4f}".format(surrogate_acc[3].item() /total/20 *100))
+    print("Accuracy of model: {:.4f}".format(en_acc.item() /total *100))
+    print("Accuracy of model_1: {:.4f}".format(surrogate_acc[0].item() /total  *100))
+    print("Accuracy of model_2: {:.4f}".format(surrogate_acc[1].item() /total  *100))
+    print("Accuracy of model_3: {:.4f}".format(surrogate_acc[2].item() /total *100))
+    print("Accuracy of model_4: {:.4f}".format(surrogate_acc[3].item() /total *100))
 
 
 
