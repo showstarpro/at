@@ -71,7 +71,7 @@ def get_args_parser():
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
 
-    parser.add_argument('--save_dir', default='/home/liuhanpeng/at/models', type=str,help='filedir to save model')
+    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -89,7 +89,7 @@ def get_args_parser():
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='inception_v4', type=str,
+    parser.add_argument('--target_model', default='resnet50', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -153,50 +153,31 @@ def main(args):
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
-<<<<<<< HEAD
-    # mlp_grad = MLP(len(surrogate_models)).to(device).train()
-=======
     # mlp_grad = Based_AutoEncoder_More().to(device).eval()
     mlp_grad = MLP(len(surrogate_models)).to(device).eval()
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
     # opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
 
     eps=args.eps/255
     attack_iter = 10
-    per_iter_eps = eps/attack_iter
+    per_iter_eps = eps
 
     total = 0
-    t_acc = 0
     correct =0
     success_num = 0
     train_bar = tqdm(data_loader_val)
     since = time.time()
 
-    en_acc = torch.zeros(1).cuda()
-    surrogate_acc = torch.zeros(len(surrogate_models)).cuda()
-
     save_dir = args.save_dir
-<<<<<<< HEAD
-    # save_path = os.path.join(save_dir,'mlp_grad.pkl')
-    # mlp_grad.load_state_dict(torch.load(save_path))
-    for i, (input, target) in enumerate(train_bar):
-=======
     save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
     # mlp_grad.load_state_dict(torch.load(save_path))
     same_num_list = [0 for i in range(len(surrogate_models)+1)]
     sum = 0
+    sim12 = 0
     for step, (input, target) in enumerate(train_bar):
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
         input = input.to(device).float()
         target = target.to(device).long()
 
-        input.requires_grad = True
         output = target_model(utils.norm_image(input))
-        cost = criterion(output, target)
-        cost.backward()
-        g_true = input.grad
-        target_model.zero_grad()
-
         
         pre = torch.argmax(output,dim=-1).detach()
         correct += (pre==target).sum().cpu()
@@ -205,18 +186,6 @@ def main(args):
         momentum = torch.zeros_like(input).detach().to(device)
         adv_images = input.clone().detach()
         
-<<<<<<< HEAD
-        for i in range(20):
-            adv_images.requires_grad = True
-            adv_tmp = adv_images.detach()
-            adv_tmp.requires_grad = True             
-            adv_output = target_model(adv_tmp)
-            adv_loss = criterion(adv_output, target)
-            adv_loss.backward()
-            g_adv = adv_tmp.grad
-
-
-=======
         for i in range(attack_iter):
             adv_images = adv_images.detach()
             adv_images.requires_grad = True
@@ -230,51 +199,19 @@ def main(args):
             adv_images.requires_grad = True
             
             # black
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
             grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
             grad_and = torch.zeros_like(input)
             # # for model_index in range(len(surrogate_models)):
             for idx,(model) in enumerate(surrogate_models):
-<<<<<<< HEAD
-                adv_copy = adv_images.clone().detach()
-                adv_copy.requires_grad = True
-=======
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
                 model.zero_grad()
-                output = model(utils.norm_image(adv_copy))
+                output = model(utils.norm_image(adv_images))
                 loss = criterion(output, target)
                 loss.backward()
-<<<<<<< HEAD
-                grad_back[:,idx] = adv_copy.grad
-                sim = torch.sum(g_adv.sign() == adv_copy.grad.sign())
-                sim = sim / input.size(0) / 3./ 224/224.
-                surrogate_acc[idx] += sim
-
-
-                
-            
-            # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
-            # grad_s = grad_s.reshape(-1, 3*3*299*299)
-
-            # grad_weight = mlp_grad(input)
-            # grad_weight = grad_weight[:,:,None,None,None]
-
-            tmp = torch.tensor([1/4, 1/4, 1/4, 1/4]).cuda()
-            grad_weight = tmp.reshape(1, 4)
-            grad_weight = grad_weight[:,:,None,None,None]
-
-            grad_hat = torch.sum((grad_back*grad_weight),dim=1)
-            en_sign = torch.sum(g_adv.sign() == grad_hat.sign()) / input.size(0) / 3./ 224/224
-            # print(en_sign)
-            en_acc += en_sign
-                
-            # weight = mlp_g(adv_images)
-            # grad =  grad_1.reshape(-1, 3*299*299)*weight[:,1].reshape(-1,1) + grad_2.reshape(-1, 3*299*299) * weight[:,1:2].reshape(-1,1) + grad_3.reshape(-1, 3*299*299) * weight[:,2:3].reshape(-1,1)
-            grad = grad_hat
-=======
                 
                 # u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
-                grad_back[:,idx] = torch.nn.functional.normalize(adv_images.grad)
+                grad_back[:,idx] = adv_images.grad/ torch.max(torch.abs(adv_images.grad))
+                # grad_back[:,idx] = adv_images.grad/ torch.mean(torch.abs(adv_images.grad),dim=(1, 2, 3), keepdim=True)
+                # grad_back[:,idx] = adv_images.grad
                 if idx==0:
                     grad_and = grad_back[:,idx].sign()
                 else:
@@ -297,15 +234,25 @@ def main(args):
             # grad_back[:,0][grad_back[:,0].sign()!=grad_true.sign()] *= -1
             # index1 = (grad_back[:,0].sign() != grad_true.sign()) and (grad_hat.sign() == grad_true.sign())
             # grad_back[:,0][grad_temp!=10] = 0
-            print((grad_back[:,0]==0).sum()/16/3./224./224. )
-            print((grad_back[:,0].sign()!=grad_true.sign()).sum()/16/3./224./224. )
+            # print((grad_back[:,0]==0).sum()/16/3./224./224. )
+            # print((grad_back[:,0].sign()!=grad_true.sign()).sum()/16/3./224./224. )
             # grad_hat[grad_true.sign()!=grad_hat.sign()] = 0
             # print((grad_hat!=0).sum()/16/3./224./224. )
             # print((grad_true.sign()!=grad_hat.sign()).sum()/16/3./224./224. )
             # grad_true[grad_true.sign()!=grad_hat.sign()] = -grad_true[grad_true.sign()!=grad_hat.sign()].sign()
             # grad_true = -grad_true
+            indx01 = (grad_back[:,0].sign() == grad_back[:,1].sign() )
+            indx02 = (grad_back[:,0].sign() == grad_back[:,2].sign() )
+            indx03 = (grad_back[:,0].sign() == grad_back[:,3].sign() )
+            indx12 = (grad_back[:,1].sign() == grad_back[:,2].sign() )
+            indx13 = (grad_back[:,1].sign() == grad_back[:,3].sign() )
+            indx23 = (grad_back[:,2].sign() == grad_back[:,3].sign() )
+            rate = (torch.sum(indx01 + indx02 + indx03 + indx12 + indx13 + indx23)) / indx01.size(0) / indx01.size(1) /indx01.size(2) / indx01.size(3)
+            # print("rate:"+str(rate))
+            grad_back[:,0][grad_back[:,1].sign() != grad_back[:,2].sign()] = 0
+            sim12 += torch.sum(indx12)  /  indx12.size(1) /indx12.size(2) / indx12.size(3)
+
             
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
 
             #ae 
             # grad_hat = mlp_grad(input)
@@ -319,7 +266,10 @@ def main(args):
                 same_num_list[-1] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*grad_hat.shape[3])
                 sum += grad_hat.shape[0]
 
-                grad = grad_back[:,0]
+                # grad = grad_back[:,0] # signal_0 model attack
+                grad = grad_hat # ensemble attack
+                # grad = torch.randn_like(adv_images).sign()  # random sign attack
+
                 grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
                 # grad = grad+ momentum * 1.0
                 # momentum =grad
@@ -327,37 +277,28 @@ def main(args):
                 adv_images = adv_images + per_iter_eps * grad.sign()
                 delta = torch.clamp(adv_images - input, min=-eps, max=eps)
                 adv_images = torch.clamp(input+ delta, min=0, max=1)
-
-            total += 1
-
-            adv_images.grad.zero_()
-
+        
+        # if input_size != val_size:
+        #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
+        #     output = target_model(resize_adv_images)
+        # else:
         output = target_model(utils.norm_image(adv_images))
         
         # _, pre = torch.max(output.data, 1)
         pre = torch.argmax(output, -1)
-        t_acc +=input.size(0)
+        total += target.size(0)
         success_num += (pre[correct_index] != target[correct_index]).sum().cpu()
 
-<<<<<<< HEAD
-        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format( i, correct.item() / t_acc *100,success_num.item() / correct.item() *100))
-
-=======
         train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format(step, correct.item() / total *100,success_num.item() / correct.item() *100))
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
 
     for idx in range(len(surrogate_models)+1):
         print(f'model:{idx}, {same_num_list[idx]/sum}')
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print("Accuracy of model: {:.4f}".format(correct.item() / t_acc  *100))
+    print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
     print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
-    print("Accuracy of model: {:.4f}".format(en_acc.item() /total *100))
-    print("Accuracy of model_1: {:.4f}".format(surrogate_acc[0].item() /total  *100))
-    print("Accuracy of model_2: {:.4f}".format(surrogate_acc[1].item() /total  *100))
-    print("Accuracy of model_3: {:.4f}".format(surrogate_acc[2].item() /total *100))
-    print("Accuracy of model_4: {:.4f}".format(surrogate_acc[3].item() /total *100))
+    print("Accuracy of sim12: {:.4f}".format(sim12 / total *100))
 
 
 

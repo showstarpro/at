@@ -31,7 +31,8 @@ from pathlib import Path
 from attack.fgsm import FGSM
 from utils.load import load_model, load_target_model, load_transform
 import timm
-from utils import norm_image
+import utils
+from ae import Based_AutoEncoder_More
 
 
 class MLP(torch.nn.Module):
@@ -70,7 +71,7 @@ def get_args_parser():
                         help='the maximum perturbation, linf: 8/255.0 and l2: 3.0')
     parser.add_argument('--seed', default=3407, type=int)
 
-    parser.add_argument('--save_dir', default='/home/liuhanpeng/at/models', type=str,help='filedir to save model')
+    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -88,7 +89,7 @@ def get_args_parser():
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='inception_v4', type=str,
+    parser.add_argument('--target_model', default='resnet50', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -112,7 +113,7 @@ def main(args):
     np.random.seed(seed)
 
     batch_size = args.batch_size
-    eps = args.eps/255
+    # eps = args.eps/255
 
     
     use_cuda = torch.cuda.is_available()
@@ -140,21 +141,25 @@ def main(args):
         criterion = nn.CrossEntropyLoss()
     
     # load model
-    print("load model!!!")
+    print("load models!!!")
     print(args.surrogate_models)
     surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
     
     # load target_model
     print("load target_model!!!")
-    print(args.target_model)
     val_size = 224
+    print(args.target_model)
     target_model= load_model(args.target_model).to(device).eval()
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss= criterion, q=20, sigma=1e-4)
-    mlp_grad = MLP(len(surrogate_models)).to(device).train()
+    # mlp_grad = Based_AutoEncoder_More().to(device).eval()
+    mlp_grad = MLP(len(surrogate_models)).to(device).eval()
     # opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
 
+    eps=args.eps/255
+    attack_iter = 10
+    per_iter_eps = eps
 
     total = 0
     correct =0
@@ -162,93 +167,130 @@ def main(args):
     train_bar = tqdm(data_loader_val)
     since = time.time()
 
-
-    en_acc = torch.zeros(1).cuda()
-    surrogate_acc = torch.zeros(4).cuda()
-    total = 0
-    tmp = torch.zeros(1).cuda().long()
-    repeat = 0
-    repeat_0_hat = 0
-    repeat_1_hat = 0
-    repeat_2_hat = 0
-    repeat_3_hat = 0
-    for i, (input, target) in enumerate(train_bar):
+    save_dir = args.save_dir
+    save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
+    # mlp_grad.load_state_dict(torch.load(save_path))
+    same_num_list = [0 for i in range(len(surrogate_models)+1)]
+    sum = 0
+    sim12 = 0
+    for step, (input, target) in enumerate(train_bar):
         input = input.to(device).float()
         target = target.to(device).long()
+
+        output = target_model(utils.norm_image(input))
         
-        input.requires_grad = True
-        output = target_model(norm_image(input))
-        loss = criterion(output, target)
-        loss.backward()
-        g_true = input.grad
+        pre = torch.argmax(output,dim=-1).detach()
+        correct += (pre==target).sum().cpu()
+        correct_index = pre==target
 
+        momentum = torch.zeros_like(input).detach().to(device)
+        adv_images = input.clone().detach()
+        
+        for i in range(attack_iter):
+            adv_images = adv_images.detach()
+            adv_images.requires_grad = True
 
-
-
-        total += 1
-        g_copy = g_true.repeat(len(surrogate_models),1,1,1).reshape(-1,len(surrogate_acc),3,224,224)
-        grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
-        # for model_index in range(len(surrogate_models)):
-        for idx,(model) in enumerate(surrogate_models):
-            adv_images = input.clone().detach()
-            adv_images.requires_grad = True  
-            model.zero_grad()
-            output = model(norm_image(adv_images))
+            # white        
+            output = target_model(utils.norm_image(adv_images))
             loss = criterion(output, target)
             loss.backward()
-            grad_back[:,idx] = adv_images.grad
-            sim = torch.sum(g_true.sign() == adv_images.grad.sign())
-            sim = sim / input.size(0) / 3./ 224/224.
-            surrogate_acc[idx] += sim
+            grad_true = adv_images.grad
+            adv_images = adv_images.detach()
+            adv_images.requires_grad = True
             
- 
+            # black
+            grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
+            grad_and = torch.zeros_like(input)
+            # # for model_index in range(len(surrogate_models)):
+            for idx,(model) in enumerate(surrogate_models):
+                model.zero_grad()
+                output = model(utils.norm_image(adv_images))
+                loss = criterion(output, target)
+                loss.backward()
+                
+                # u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
+                
+                # grad_back[:,idx] = adv_images.grad/ torch.max(torch.abs(adv_images.grad))
+                grad_back[:,idx] = adv_images.grad/ torch.mean(torch.abs(adv_images.grad),dim=(1, 2, 3), keepdim=True)
+                # grad_back[:,idx] = adv_images.grad
+                mean_tmp = torch.mean(torch.abs(grad_back[:,idx]), dim=(1,2,3), keepdim=True )
+                grad_back[:,idx][grad_back[:,idx] > mean_tmp] = 0
+                if idx==0:
+                    grad_and = grad_back[:,idx].sign()
+                else:
+                    grad_and[grad_and != grad_back[:,idx].sign()] = 0
+                # grad_back[:,idx] = adv_images.grad
+                adv_images = adv_images.detach()
+                adv_images.requires_grad = True
+                # print(torch.nn.functional.normalize(adv_images.grad).shape)
+            
+            # grad_weight = mlp_grad(input)
+            # print(grad_weight)
+            # grad_weight = torch.full([input.shape[0],4],1/6).type_as(input)
+            # grad_weight[:, 0] = 1/2
+            # grad_weight = grad_weight[:,:,None,None,None]
+            grad_weight = 1 / len(surrogate_models)
+            grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+            grad_temp = grad_back[:,0].clone()
+            grad_temp[grad_temp.sign() == grad_true.sign()] = 10
+            grad_temp[grad_hat.sign() != grad_true.sign()] = 10
+            # grad_back[:,0][grad_back[:,0].sign()!=grad_true.sign()] *= -1
+            # index1 = (grad_back[:,0].sign() != grad_true.sign()) and (grad_hat.sign() == grad_true.sign())
+            # grad_back[:,0][grad_temp!=10] = 0
+            # print((grad_back[:,0]==0).sum()/16/3./224./224. )
+            # print((grad_back[:,0].sign()!=grad_true.sign()).sum()/16/3./224./224. )
+            # grad_hat[grad_true.sign()!=grad_hat.sign()] = 0
+            # print((grad_hat!=0).sum()/16/3./224./224. )
+            # print((grad_true.sign()!=grad_hat.sign()).sum()/16/3./224./224. )
+            # grad_true[grad_true.sign()!=grad_hat.sign()] = -grad_true[grad_true.sign()!=grad_hat.sign()].sign()
+            # grad_true = -grad_true
+            
 
-        tp = g_copy.sign() == grad_back.sign()
-        c = tp[:,0] & tp[:,1] & tp[:,2] & tp[:,3]
-        repeat += torch.sum(c) / input.size(0) / 3./ 224./224
-        # tmpe =torch.sum(torch.sum(g_copy.sign() == grad_back.sign(),dim=0).reshape(len(surrogate_models),-1), dim=1) / input.size(0) / 3./ 224./224
- 
-        # tmpe =torch.sum(torch.sum(g_copy.sign() == grad_back.sign(),dim=0).reshape(len(surrogate_models),-1), dim=1) / input.size(0) / 3./ 224./224
-        # print("surrogate_acc"+ str(idx))
-        # print(tmpe) 
-        # surrogate_acc += tmpe
+            #ae 
+            # grad_hat = mlp_grad(input)
 
+            with torch.no_grad():
+                for idx in range(len(surrogate_models)):
+                    same_num = ((grad_true.sign() - grad_back[:,idx].sign()) == 0).sum().item()
+                    same_num_list[idx] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*grad_hat.shape[3])
+                    # print(same_num_list[idx])
+                same_num = same_num = ((grad_true.sign() - grad_hat.sign()) == 0).sum().item()
+                same_num_list[-1] += same_num / (grad_hat.shape[1]*grad_hat.shape[2]*grad_hat.shape[3])
+                sum += grad_hat.shape[0]
 
+                # grad = grad_back[:,0] # signal_0 model attack
+                grad = grad_hat # ensemble attack
+                # grad = torch.randn_like(adv_images).sign()  # random sign attack
 
-        tmp = torch.tensor([1/4, 1/4, 1/4, 1/4]).cuda()
-        grad_weight = tmp.reshape(1, 4)
-        grad_weight = grad_weight[:,:,None,None,None]
-        grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+                grad = grad / torch.mean(torch.abs(grad),dim=(1, 2, 3), keepdim=True)
+                # grad = grad+ momentum * 1.0
+                # momentum =grad
 
-        # s_0 = grad_back[:, 0].sign()
-        # s_1 = grad_back[:, 1].sign()
-        # print("s_0 and s_1: max:")
-        # print(torch.max(grad_back[:, 0][s_0==s_1].abs()))
-        # print("grad[s_0==s_1].max:")
-        # print(torch.max(grad_hat[s_0==s_1].abs()))
+                adv_images = adv_images + per_iter_eps * grad.sign()
+                delta = torch.clamp(adv_images - input, min=-eps, max=eps)
+                adv_images = torch.clamp(input+ delta, min=0, max=1)
+        
+        # if input_size != val_size:
+        #     resize_adv_images = F.interpolate(input=adv_images, size=val_size, mode='bicubic')
+        #     output = target_model(resize_adv_images)
+        # else:
+        output = target_model(utils.norm_image(adv_images))
+        
+        # _, pre = torch.max(output.data, 1)
+        pre = torch.argmax(output, -1)
+        total += target.size(0)
+        success_num += (pre[correct_index] != target[correct_index]).sum().cpu()
 
+        train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format(step, correct.item() / total *100,success_num.item() / correct.item() *100))
 
-        en_sign = torch.sum(g_true.sign() == grad_hat.sign()) / input.size(0) / 3./ 224/224
-        # print(en_sign)
-        en_acc += en_sign
-
-
-
-
-
-        # train_bar.set_description(" step: [{}], acc: {:.4f} asr: {:.4f}".format( i, correct.item() / total *100,success_num.item() / correct.item() *100))
-
-
+    for idx in range(len(surrogate_models)+1):
+        print(f'model:{idx}, {same_num_list[idx]/sum}')
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print("Accuracy of model: {:.4f}".format(en_acc.item() /total *100))
-    print("Accuracy of model_1: {:.4f}".format(surrogate_acc[0].item() /total  *100))
-    print("Accuracy of model_2: {:.4f}".format(surrogate_acc[1].item() /total  *100))
-    print("Accuracy of model_3: {:.4f}".format(surrogate_acc[2].item() /total *100))
-    print("Accuracy of model_4: {:.4f}".format(surrogate_acc[3].item() /total *100))
-    print("Accuracy of repeat: {:.4f}".format(repeat /total *100))
-
+    print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
+    print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
+    print("Accuracy of sim12: {:.4f}".format(sim12 / total *100))
 
 
 
