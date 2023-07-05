@@ -6,11 +6,11 @@ target_file="../data/at/val_rs.csv"
 output_dir="../data"
 surrogate_models="inception_v4 resnet18 densenet161 vgg16_bn"
 model_path="../data/model"
-target_model="inception_v3"
+target_model="resnet50"
 target_model_path="../data/model"
 loss="ce"
 device="cuda"
-sgpu=0
+sgpu=1
 
 
 
@@ -30,4 +30,4 @@ training_start_params=" \
 --sgpu ${sgpu}
 "
 
-python train_weight.py ${training_start_params}
+python test_rgf.py ${training_start_params}

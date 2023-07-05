@@ -32,6 +32,7 @@ from attack.fgsm import FGSM
 from utils.load import load_model, load_target_model, load_transform
 import timm
 import utils
+from ae import Based_AutoEncoder_More
 
 
 class MLP(torch.nn.Module):
@@ -86,7 +87,7 @@ def get_args_parser():
                         help='Batch size per GPU')
     parser.add_argument('--seed', default=3407, type=int)
 
-    parser.add_argument('--save_dir', default='/home/liuhanpeng/at/models', type=str,help='filedir to save model')
+    parser.add_argument('--save_dir', default='imagenet', type=str,help='filedir to save model')
 
     # Dataset parameters
     parser.add_argument('--dataset', default='imagenet', type=str,
@@ -100,11 +101,11 @@ def get_args_parser():
                         help='path where to save, empty for no saving')
     
     # Model parameters
-    parser.add_argument('--surrogate_models', default=["inception_v4", "resnet18", "densenet161", "vgg16_bn"], type=str, nargs='+',
+    parser.add_argument('--surrogate_models', default='inc_v3', type=str, nargs='+',
                         help='the surrogate_models list')
     parser.add_argument('--model_path', default=None, type=str, 
                         help='the path of white model')
-    parser.add_argument('--target_model', default='resnet50', type=str,
+    parser.add_argument('--target_model', default='resnet101', type=str,
                         help='the target model')
     parser.add_argument('--target_model_path', default=None, type=str,
                         help='the path of target model')
@@ -117,7 +118,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--ngpu', default=1, type=int,
                         help='number of gpu')
-    parser.add_argument('--sgpu', default=1, type=int,
+    parser.add_argument('--sgpu', default=3, type=int,
                         help='gpu index (start)')
     
     return parser
@@ -155,8 +156,8 @@ def main(args):
     
     # load model
     print("load model!!!")
-    print(args.surrogate_models)
-    surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
+    # print(args.surrogate_models)
+    # surrogate_models = [load_model(model_name).to(device).eval() for model_name in args.surrogate_models]
     
     # load target_model
     print("load target_model!!!")
@@ -165,40 +166,18 @@ def main(args):
 
     print("Attack is start!!!")
     rgf = RGF(model=target_model, loss=criterion, q=20, sigma=1e-4)
-    mlp_grad = MLP(len(surrogate_models)).to(device).train()
-    opt = optim.SGD(mlp_grad.parameters(), lr=5e-3, momentum=0.9, weight_decay=1e-5)
+    mlp_grad = Based_AutoEncoder_More().to(device).train()
+    # mlp_grad = MLP(len(surrogate_models)).to(device).train()
+    opt = optim.SGD(mlp_grad.parameters(), lr=1e-2, momentum=0.9, weight_decay=1e-5)
 
     save_dir = args.save_dir
-<<<<<<< HEAD
-
-    train_bar = tqdm(data_loader_val)
-    for i, (input, target) in enumerate(train_bar):
-        input = input.to(device).float()
-        target = target.to(device).long()
-        input.requires_grad = True
-        
-        # grad_query = torch.zeros_like(input)
-        # for i in range(input.size(0)):
-        #     grad_query[i] = rgf.query(input[i:i+1], target[i:i+1])
-        grad_query = rgf.query(input,target)
-        
-        grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
-        # for model_index in range(len(surrogate_models)):
-        for idx,(model) in enumerate(surrogate_models):
-            # input = input.detach()
-            model.zero_grad()
-            output = model(utils.norm_image(input))
-            loss = criterion(output, target)
-            loss.backward()
-            grad_back[:,idx] = torch.nn.functional.normalize(input.grad)
-=======
     eps = 16/255
     attack_iter = 10
     iter_eps = eps/attack_iter
 
 
     # train_bar = tqdm(data_loader_val)
-    max_epoch = 2
+    max_epoch = 10
     for epoch in range(max_epoch):
         train_bar = tqdm(data_loader_val)
         loss_sum = 0
@@ -229,34 +208,36 @@ def main(args):
                     delta = torch.clamp(adv_images - input, min=-eps, max=eps)
                     adv_images = torch.clamp(input+ delta, min=0, max=1)
 
-                # adv_images.grad.zero_()
+                # # adv_images.grad.zero_()
                 adv_images.requires_grad = True
-                grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
-                # for model_index in range(len(surrogate_models)):
-                for idx,(model) in enumerate(surrogate_models):
-                    # input = input.detach()
-                    model.zero_grad()
-                    output = model(utils.norm_image(adv_images))
-                    loss = criterion(output, target)
-                    loss.backward()
-                    grad_back[:,idx] = torch.nn.functional.normalize(adv_images.grad)
-                    # grad_back[:,idx] = adv_images.grad
+                # grad_back = torch.zeros([input.shape[0],len(surrogate_models),input.shape[1],input.shape[2],input.shape[3]]).type_as(input)
+                # # for model_index in range(len(surrogate_models)):
+                # for idx,(model) in enumerate(surrogate_models):
+                #     # input = input.detach()
+                #     model.zero_grad()
+                #     output = model(utils.norm_image(adv_images))
+                #     loss = criterion(output, target)
+                #     loss.backward()
+                #     grad_back[:,idx] = adv_images.grad
                 
                 
-                # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
-                # grad_s = grad_s.reshape(-1, 3*3*299*299)
-                grad_weight = mlp_grad(adv_images)
-                grad_weight = grad_weight[:,:,None,None,None]
-                grad_hat = torch.sum((grad_back*grad_weight),dim=1)
-                # g_hat = g_hat.reshape(-1, 3*299*299)
-                loss_grad = mseloss(grad_hat,grad_query)
+                # # grad_s = torch.cat((grad_1, grad_2, grad_3), 1)
+                # # grad_s = grad_s.reshape(-1, 3*3*299*299)
+                # grad_weight = mlp_grad(adv_images)
+                # grad_weight = grad_weight[:,:,None,None,None]
+                # grad_hat = torch.sum((grad_back*grad_weight),dim=1)
+                # # g_hat = g_hat.reshape(-1, 3*299*299)
+                # loss_grad = mseloss(grad_hat,grad_query)
+
+                grad_learn = mlp_grad(adv_images)
+                loss_grad = mseloss(grad_learn,grad_query.sign())
 
                 opt.zero_grad()
                 loss_grad.backward()
                 opt.step()
 
                 sign_learn = grad_query.sign()
-                sign_query = grad_hat.sign()
+                sign_query = grad_learn.sign()
                 # same_num = (sign_learn == sign_query).sum(dim=(1,2,3)).cpu().numpy()
                 same_num = ((sign_learn - sign_query) == 0).sum(dim=(1,2,3)).cpu().numpy()
                 loss_sum += loss_grad.item()
@@ -267,10 +248,9 @@ def main(args):
             train_bar.set_description("epoch: {} step: [{}], loss: {:.8f} acc: {:.8f}".format(epoch, i, loss_sum/sum,acc_np))
             # adv_images = input + 8/255 * images.grad.sign()
             # adv_images = torch.clamp(adv_images, 0, 1)
->>>>>>> 1f696e9d821ca60451c238218bd8a46cc5acefd3
         
     print('Saving..')
-    save_path = os.path.join(save_dir,'mlp_grad_3.pkl')
+    save_path = os.path.join(save_dir,'ae_grad.pkl')
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
     torch.save(mlp_grad.state_dict(), save_path)

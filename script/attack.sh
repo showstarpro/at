@@ -1,6 +1,6 @@
 attack_name='mi_fgsm'
-eps=8
-batch_size=8
+eps=2
+batch_size=16
 save_dir="../data/model"
 dataset="imagenet"
 dataset_path="/home/dataset/ImageNet/ILSVRC2012_img_val"

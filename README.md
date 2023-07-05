@@ -2,9 +2,11 @@
 
 ### Requirements 
 
-- Pytorch
+- python==3.9.16
+- Pytorch==1.12.1
 - timm
-- torchvision
+- torchvision==0.13.0
+
 
 ### dataset
 
@@ -15,7 +17,7 @@ dataset_root = ./val_rs.csv
 
 ### attack_method
 
-FGSM、MI-FGSM、NI-FGSM、VMI-FGSM are placed in ./attack
+FGSM、PGD、MI-FGSM、NI-FGSM、VMI-FGSM are placed in ./attack
 
 ### use the attack method
 
