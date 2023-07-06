@@ -102,7 +102,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--ngpu', default=1, type=int,
                         help='number of gpu')
-    parser.add_argument('--sgpu', default=2, type=int,
+    parser.add_argument('--sgpu', default=3, type=int,
                         help='gpu index (start)')
     
     return parser
@@ -176,6 +176,8 @@ def main(args):
     for step, (input, target) in enumerate(train_bar):
         input = input.to(device).float()
         target = target.to(device).long()
+        at_target = torch.tensor(88).to(device).long()
+        # at_target = at_target.repeat(input.size(0)).reshape_as(target)
 
         output = target_model(utils.norm_image(input))
         
@@ -193,6 +195,7 @@ def main(args):
             # white        
             output = target_model(utils.norm_image(adv_images))
             loss = criterion(output, target)
+            # loss = criterion(output, at_target)
             loss.backward()
             grad_true = adv_images.grad
             adv_images = adv_images.detach()
@@ -205,21 +208,26 @@ def main(args):
             for idx,(model) in enumerate(surrogate_models):
                 model.zero_grad()
                 output = model(utils.norm_image(adv_images))
+                adv_pre = torch.argmax(output, dim=-1).detach()
+
                 loss = criterion(output, target)
+                # loss = criterion(output, at_target)
                 loss.backward()
                 
                 # u = u / torch.sqrt(torch.sum(u * u,dim=[1,2,3]))[:,None,None,None]
-                grad_back[:,idx] = adv_images.grad/ torch.max(torch.abs(adv_images.grad))
-                # grad_back[:,idx] = adv_images.grad/ torch.mean(torch.abs(adv_images.grad),dim=(1, 2, 3), keepdim=True)
+                # grad_back[:,idx] = adv_images.grad/ torch.max(torch.abs(adv_images.grad))
+                grad_back[:,idx] = adv_images.grad/ torch.mean(torch.abs(adv_images.grad),dim=(1, 2, 3), keepdim=True)
                 # grad_back[:,idx] = adv_images.grad
-                if idx==0:
-                    grad_and = grad_back[:,idx].sign()
-                else:
-                    grad_and[grad_and != grad_back[:,idx].sign()] = 0
-                # grad_back[:,idx] = adv_images.grad
+
                 adv_images = adv_images.detach()
                 adv_images.requires_grad = True
-                # print(torch.nn.functional.normalize(adv_images.grad).shape)
+                # # print(torch.nn.functional.normalize(adv_images.grad).shape)
+                # adv_pre = torch.argmax(output, dim=-1).detach()
+                grad_back[:,idx][adv_pre!=target] = 0
+
+                
+                
+
             
             # grad_weight = mlp_grad(input)
             # print(grad_weight)
@@ -228,9 +236,7 @@ def main(args):
             # grad_weight = grad_weight[:,:,None,None,None]
             grad_weight = 1 / len(surrogate_models)
             grad_hat = torch.sum((grad_back*grad_weight),dim=1)
-            grad_temp = grad_back[:,0].clone()
-            grad_temp[grad_temp.sign() == grad_true.sign()] = 10
-            grad_temp[grad_hat.sign() != grad_true.sign()] = 10
+
             # grad_back[:,0][grad_back[:,0].sign()!=grad_true.sign()] *= -1
             # index1 = (grad_back[:,0].sign() != grad_true.sign()) and (grad_hat.sign() == grad_true.sign())
             # grad_back[:,0][grad_temp!=10] = 0
@@ -241,16 +247,16 @@ def main(args):
             # print((grad_true.sign()!=grad_hat.sign()).sum()/16/3./224./224. )
             # grad_true[grad_true.sign()!=grad_hat.sign()] = -grad_true[grad_true.sign()!=grad_hat.sign()].sign()
             # grad_true = -grad_true
-            indx01 = (grad_back[:,0].sign() == grad_back[:,1].sign() )
-            indx02 = (grad_back[:,0].sign() == grad_back[:,2].sign() )
-            indx03 = (grad_back[:,0].sign() == grad_back[:,3].sign() )
-            indx12 = (grad_back[:,1].sign() == grad_back[:,2].sign() )
-            indx13 = (grad_back[:,1].sign() == grad_back[:,3].sign() )
-            indx23 = (grad_back[:,2].sign() == grad_back[:,3].sign() )
-            rate = (torch.sum(indx01 + indx02 + indx03 + indx12 + indx13 + indx23)) / indx01.size(0) / indx01.size(1) /indx01.size(2) / indx01.size(3)
-            # print("rate:"+str(rate))
-            grad_back[:,0][grad_back[:,1].sign() != grad_back[:,2].sign()] = 0
-            sim12 += torch.sum(indx12)  /  indx12.size(1) /indx12.size(2) / indx12.size(3)
+            # indx01 = (grad_back[:,0].sign() == grad_back[:,1].sign() )
+            # indx02 = (grad_back[:,0].sign() == grad_back[:,2].sign() )
+            # indx03 = (grad_back[:,0].sign() == grad_back[:,3].sign() )
+            # indx12 = (grad_back[:,1].sign() == grad_back[:,2].sign() )
+            # indx13 = (grad_back[:,1].sign() == grad_back[:,3].sign() )
+            # indx23 = (grad_back[:,2].sign() == grad_back[:,3].sign() )
+            # rate = (torch.sum(indx01 + indx02 + indx03 + indx12 + indx13 + indx23)) / indx01.size(0) / indx01.size(1) /indx01.size(2) / indx01.size(3)
+            # # print("rate:"+str(rate))
+            # grad_back[:,0][grad_back[:,1].sign() != grad_back[:,2].sign()] = 0
+            # sim12 += torch.sum(indx12)  /  indx12.size(1) /indx12.size(2) / indx12.size(3)
 
             
 
@@ -298,7 +304,7 @@ def main(args):
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
     print("Accuracy of model: {:.4f}".format(correct.item() / total *100))
     print("Accuracy of attack: {:.4f}".format(success_num.item() / correct.item() *100))
-    print("Accuracy of sim12: {:.4f}".format(sim12 / total *100))
+    # print("Accuracy of sim12: {:.4f}".format(sim12 / total *100))
 
 
 
